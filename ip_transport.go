@@ -68,6 +68,31 @@ func NewIPTransport(config Config, a *accessory.Accessory, as ...*accessory.Acce
 		log.Info.Panic("Invalid empty name for first accessory")
 	}
 
+	t, err := newIPTransportEx(name, config)
+	if err != nil {
+		return nil, err
+	}
+
+	t.container.AddAccessory(a)
+	for _, a := range as {
+		t.container.AddAccessory(a)
+	}
+
+	return t, nil
+}
+
+
+func NewIPTransportBridge(name string, config Config) (Transport, *accessory.Bridge, error) {
+	t, err := newIPTransportEx(name, config)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	bridge := accessory.NewBridge(accessory.Info{Name: name}, t.container)
+	return t, bridge, nil
+}
+
+func newIPTransportEx(name string, config Config) (*ipTransport, error) {
 	cfg := defaultConfig(name)
 	cfg.merge(config)
 
@@ -97,40 +122,35 @@ func NewIPTransport(config Config, a *accessory.Accessory, as ...*accessory.Acce
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	emitter := event.NewEmitter()
+
 	t := &ipTransport{
 		storage:   storage,
 		database:  database,
 		device:    device,
 		config:    cfg,
-		container: accessory.NewContainer(),
+		container: accessory.NewContainerWithEmitter(emitter),
 		mutex:     &sync.Mutex{},
 		context:   hap.NewContextForSecuredDevice(device),
-		emitter:   event.NewEmitter(),
+		emitter:   emitter,
 		responder: responder,
 		ctx:       ctx,
 		cancel:    cancel,
 		stopped:   make(chan struct{}),
 	}
 
-	t.addAccessory(a)
-	for _, a := range as {
-		t.addAccessory(a)
-	}
+	// Listen for events to update mDNS txt records
+	t.emitter.AddListener(t)
 
 	// Users can only pair discoverable accessories
 	if t.isPaired() {
 		cfg.discoverable = false
 	}
 
-	cfg.categoryId = int(t.container.AccessoryType())
-	cfg.updateConfigHash(t.container.ContentHash())
-	cfg.save(storage)
-
-	// Listen for events to update mDNS txt records
-	t.emitter.AddListener(t)
-
 	return t, err
 }
+
+
 
 func (t *ipTransport) Start() {
 
@@ -219,9 +239,7 @@ func (t *ipTransport) updateMDNSReachability() {
 	}
 }
 
-func (t *ipTransport) addAccessory(a *accessory.Accessory) {
-	t.container.AddAccessory(a)
-
+func (t *ipTransport) addedAccessory(a *accessory.Accessory) {
 	for _, s := range a.Services {
 		for _, c := range s.Characteristics {
 			// When a characteristic value changes and events are enabled for this characteristic
@@ -242,6 +260,11 @@ func (t *ipTransport) addAccessory(a *accessory.Accessory) {
 			c.OnValueUpdate(onChange)
 		}
 	}
+
+	t.config.categoryId = int(t.container.AccessoryType())
+	t.config.updateConfigHash(t.container.ContentHash())
+	t.config.save(t.storage)
+	t.updateMDNSReachability()
 }
 
 func (t *ipTransport) notifyListener(a *accessory.Accessory, c *characteristic.Characteristic, except net.Conn) {
@@ -268,13 +291,18 @@ func (t *ipTransport) notifyListener(a *accessory.Accessory, c *characteristic.C
 
 // Handles event which are sent when pairing with a device is added or removed
 func (t *ipTransport) Handle(ev interface{}) {
-	switch ev.(type) {
+	switch ev := ev.(type) {
 	case event.DevicePaired:
 		log.Debug.Printf("Event: paired with device")
 		t.updateMDNSReachability()
 	case event.DeviceUnpaired:
 		log.Debug.Printf("Event: unpaired with device")
 		t.updateMDNSReachability()
+	case event.ContainerAccessoryAdded:
+		log.Debug.Printf("Event: accessory added to container")
+		t.addedAccessory(ev.Accessory.(*accessory.Accessory))
+	case event.ContainerAccessoryRemoved:
+		log.Debug.Printf("Event: accessory removed from container (not yet handled)")
 	default:
 		break
 	}

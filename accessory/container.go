@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"github.com/brutella/hc/log"
+	"github.com/brutella/hc/event"
 )
 
 // Container manages a list of accessories.
@@ -11,14 +12,21 @@ type Container struct {
 	Accessories []*Accessory `json:"accessories"`
 
 	idCount int64
+	emitter event.Emitter
+}
+
+// NewContainerWithEmitter returns a container.
+func NewContainerWithEmitter(emitter event.Emitter) *Container {
+	return &Container{
+		Accessories: make([]*Accessory, 0),
+		idCount:     1,
+		emitter: emitter,
+	}
 }
 
 // NewContainer returns a container.
 func NewContainer() *Container {
-	return &Container{
-		Accessories: make([]*Accessory, 0),
-		idCount:     1,
-	}
+	return NewContainerWithEmitter(event.NewEmitter())
 }
 
 // AddAccessory adds an accessory to the container.
@@ -27,6 +35,7 @@ func (m *Container) AddAccessory(a *Accessory) {
 	a.SetID(m.idCount)
 	m.idCount++
 	m.Accessories = append(m.Accessories, a)
+	m.emitter.Emit(event.ContainerAccessoryAdded{Accessory: a})
 }
 
 // RemoveAccessory removes an accessory from the container.
@@ -36,6 +45,7 @@ func (m *Container) RemoveAccessory(a *Accessory) {
 			m.Accessories = append(m.Accessories[:i], m.Accessories[i+1:]...)
 		}
 	}
+	m.emitter.Emit(event.ContainerAccessoryRemoved{Accessory: a})
 }
 
 // Equal returns true when receiver has the same accessories as the argument.
